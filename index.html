@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kanban Tasks with Confetti</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* Tailwind gray-100 */
+        }
+        .kanban-column {
+            min-height: 300px; /* Minimum height for columns */
+            transition: background-color 0.2s ease-in-out;
+        }
+        .kanban-column.drag-over {
+            background-color: #e0e7ff; /* Tailwind indigo-100 */
+        }
+        .task {
+            cursor: grab;
+            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+        }
+        .task:active {
+            cursor: grabbing;
+            transform: scale(1.05);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); /* Tailwind shadow-lg */
+        }
+        .task.dragging {
+            opacity: 0.5;
+        }
+        #confetti-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Allows clicks to go through the canvas */
+            z-index: 9999;
+            display: none; /* Initially hidden */
+        }
+        .delete-btn {
+            opacity: 0;
+            transition: opacity 0.2s ease-in-out;
+        }
+        .task:hover .delete-btn {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+    <div class="container mx-auto max-w-6xl">
+        <header class="mb-8 text-center">
+            <h1 class="text-4xl font-bold text-gray-800">LIMBS Orthopaedic - Task Tracker</h1>
+            <p class="text-gray-600">Organize your work and celebrate completions!</p>
+            <img src="https://i.imgur.com/Da98CUF.png" alt="Company Logo" style="display: block; margin: 0 auto 24px auto; height: 80px; border-radius: 4px;">
+        </header>
+
+        <div class="mb-8 p-6 bg-white rounded-lg shadow-md">
+            <h2 class="text-2xl font-semibold text-gray-700 mb-4">Add New Task or product to be made</h2>
+            <div class="flex flex-col sm:flex-row gap-4">
+                <input type="text" id="new-task-input" placeholder="Enter task/product description..." class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition duration-150">
+                <button id="add-task-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-lg transition duration-150 shadow-sm hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50">
+                    Add Task
+                </button>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div id="todo" class="kanban-column bg-gray-200 p-5 rounded-lg shadow">
+                <h3 class="text-xl font-semibold text-gray-700 mb-4 border-b-2 border-red-500 pb-2">To Do</h3>
+                <div class="task-list space-y-3 min-h-[200px]">
+                    </div>
+            </div>
+
+            <div id="inprogress" class="kanban-column bg-gray-200 p-5 rounded-lg shadow">
+                <h3 class="text-xl font-semibold text-gray-700 mb-4 border-b-2 border-yellow-500 pb-2">In Progress</h3>
+                <div class="task-list space-y-3 min-h-[200px]">
+                    </div>
+            </div>
+
+            <div id="done" class="kanban-column bg-gray-200 p-5 rounded-lg shadow">
+                <h3 class="text-xl font-semibold text-gray-700 mb-4 border-b-2 border-green-500 pb-2">Done</h3>
+                <div class="task-list space-y-3 min-h-[200px]">
+                    </div>
+            </div>
+        </div>
+    </div>
+
+    <canvas id="confetti-canvas"></canvas>
+
+    <script>
+        // --- DOM Elements ---
+        const taskInput = document.getElementById('new-task-input');
+        const addTaskBtn = document.getElementById('add-task-btn');
+        const columns = document.querySelectorAll('.kanban-column');
+        const confettiCanvas = document.getElementById('confetti-canvas');
+        const ctx = confettiCanvas.getContext('2d');
+
+        // --- State ---
+        let tasks = JSON.parse(localStorage.getItem('kanbanTasks')) || [];
+        let draggedTask = null;
+
+        // --- Confetti Configuration ---
+        const confettiCount = 200;
+        const confettiParticles = [];
+        const confettiColors = ['#FFC700', '#FF0000', '#2E3192', '#41BBC7', '#009688', '#F44336', '#E91E63', '#9C27B0'];
+
+        // --- Functions ---
+
+        /**
+         * Generates a unique ID for tasks.
+         * @returns {string} A unique ID.
+         */
+        function generateId() {
+            return `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        }
+
+        /**
+         * Renders all tasks on the board.
+         */
+        function renderTasks() {
+            // Clear existing tasks from columns
+            document.querySelectorAll('.task-list').forEach(list => list.innerHTML = '');
+
+            tasks.forEach(task => {
+                const taskElement = createTaskElement(task);
+                const columnElement = document.getElementById(task.status).querySelector('.task-list');
+                if (columnElement) {
+                    columnElement.appendChild(taskElement);
+                }
+            });
+            saveTasks();
+        }
+
+        /**
+         * Creates a DOM element for a task.
+         * @param {object} task - The task object {id, text, status}.
+         * @returns {HTMLElement} The task DOM element.
+         */
+        function createTaskElement(task) {
+            const div = document.createElement('div');
+            div.classList.add('task', 'p-4', 'bg-white', 'rounded-lg', 'shadow-sm', 'flex', 'justify-between', 'items-center');
+            div.setAttribute('draggable', 'true');
+            div.dataset.id = task.id;
+
+            const taskText = document.createElement('span');
+            taskText.textContent = task.text;
+            taskText.classList.add('text-gray-800', 'flex-grow');
+            div.appendChild(taskText);
+
+            const deleteButton = document.createElement('button');
+            deleteButton.innerHTML = '&times;'; // 'x' character
+            deleteButton.classList.add('delete-btn', 'text-red-500', 'hover:text-red-700', 'font-bold', 'ml-2', 'px-2', 'py-1', 'rounded');
+            deleteButton.title = "Delete task";
+            deleteButton.onclick = () => deleteTask(task.id);
+            div.appendChild(deleteButton);
+
+            // Drag event listeners for the task
+            div.addEventListener('dragstart', (e) => {
+                draggedTask = task;
+                e.dataTransfer.setData('text/plain', task.id);
+                setTimeout(() => div.classList.add('dragging'), 0); // Style while dragging
+            });
+
+            div.addEventListener('dragend', () => {
+                draggedTask = null;
+                div.classList.remove('dragging');
+                columns.forEach(col => col.classList.remove('drag-over'));
+            });
+
+            return div;
+        }
+
+        /**
+         * Adds a new task to the "To Do" column.
+         */
+        function addTask() {
+            const taskText = taskInput.value.trim();
+            if (taskText === '') {
+                alert('Please enter a task you want to track.'); // Consider a more subtle notification
+                return;
+            }
+
+            const newTask = {
+                id: generateId(),
+                text: taskText,
+                status: 'todo' // Default status
+            };
+            tasks.push(newTask);
+            taskInput.value = ''; // Clear input
+            renderTasks();
+        }
+
+        /**
+         * Deletes a task by its ID.
+         * @param {string} taskId - The ID of the task to delete.
+         */
+        function deleteTask(taskId) {
+            tasks = tasks.filter(task => task.id !== taskId);
+            renderTasks();
+        }
+
+
+        /**
+         * Updates the status of a task.
+         * @param {string} taskId - The ID of the task to update.
+         * @param {string} newStatus - The new status ('todo', 'inprogress', 'done').
+         */
+        function updateTaskStatus(taskId, newStatus) {
+            const task = tasks.find(t => t.id === taskId);
+            if (task) {
+                const oldStatus = task.status;
+                task.status = newStatus;
+                renderTasks();
+
+                if (newStatus === 'done' && oldStatus !== 'done') {
+                    triggerConfetti();
+                }
+            }
+        }
+
+        /**
+         * Saves tasks to local storage.
+         */
+        function saveTasks() {
+            localStorage.setItem('kanbanTasks', JSON.stringify(tasks));
+        }
+
+        // --- Confetti Animation Functions ---
+
+        /**
+         * Represents a single confetti particle.
+         */
+        function ConfettiParticle() {
+            this.x = Math.random() * confettiCanvas.width;
+            this.y = Math.random() * confettiCanvas.height - confettiCanvas.height; // Start above screen
+            this.size = Math.random() * 10 + 5;
+            this.color = confettiColors[Math.floor(Math.random() * confettiColors.length)];
+            this.speed = Math.random() * 3 + 2;
+            this.angle = Math.random() * Math.PI * 2; // Random angle for movement
+            this.opacity = 1;
+            this.rotation = Math.random() * 360; // For spinning effect
+            this.spin = Math.random() < 0.5 ? -1 : 1; // Spin direction
+        }
+
+        ConfettiParticle.prototype.update = function() {
+            this.y += this.speed;
+            this.x += Math.sin(this.angle) * 0.5; // Slight horizontal sway
+            this.angle += 0.01;
+            this.opacity -= 0.005; // Fade out
+            this.rotation += this.spin * 2;
+            if (this.y > confettiCanvas.height) { // Reset if off screen
+                this.y = -this.size;
+                this.x = Math.random() * confettiCanvas.width;
+            }
+        };
+
+        ConfettiParticle.prototype.draw = function() {
+            ctx.save();
+            ctx.beginPath();
+            ctx.translate(this.x + this.size / 2, this.y + this.size / 2);
+            ctx.rotate(this.rotation * Math.PI / 180);
+            ctx.fillStyle = this.color;
+            ctx.globalAlpha = this.opacity;
+            ctx.fillRect(-this.size / 2, -this.size / 2, this.size, this.size);
+            ctx.restore();
+        };
+
+        /**
+         * Initializes confetti particles.
+         */
+        function initConfetti() {
+            confettiCanvas.style.display = 'block';
+            confettiCanvas.width = window.innerWidth;
+            confettiCanvas.height = window.innerHeight;
+            confettiParticles.length = 0; // Clear previous particles
+            for (let i = 0; i < confettiCount; i++) {
+                confettiParticles.push(new ConfettiParticle());
+            }
+        }
+
+        let confettiAnimationId;
+        /**
+         * Animation loop for confetti.
+         */
+        function animateConfetti() {
+            ctx.clearRect(0, 0, confettiCanvas.width, confettiCanvas.height);
+            let activeParticles = false;
+            confettiParticles.forEach(p => {
+                p.update();
+                p.draw();
+                if (p.opacity > 0) activeParticles = true;
+            });
+
+            if (activeParticles) {
+                confettiAnimationId = requestAnimationFrame(animateConfetti);
+            } else {
+                confettiCanvas.style.display = 'none'; // Hide when done
+            }
+        }
+
+        /**
+         * Triggers the confetti animation.
+         */
+        function triggerConfetti() {
+            initConfetti();
+            if (confettiAnimationId) cancelAnimationFrame(confettiAnimationId); // Cancel any existing animation
+            animateConfetti();
+            setTimeout(() => { // Automatically stop after a few seconds
+                cancelAnimationFrame(confettiAnimationId);
+                confettiCanvas.style.display = 'none';
+            }, 4000); // Confetti duration
+        }
+
+        // --- Event Listeners ---
+        addTaskBtn.addEventListener('click', addTask);
+        taskInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                addTask();
+            }
+        });
+
+        // Drag and Drop for Columns
+        columns.forEach(column => {
+            column.addEventListener('dragover', (e) => {
+                e.preventDefault(); // Necessary to allow drop
+                if (column !== draggedTask?.currentColumn) { // Optional: highlight only if different column
+                    column.classList.add('drag-over');
+                }
+            });
+
+            column.addEventListener('dragleave', () => {
+                column.classList.remove('drag-over');
+            });
+
+            column.addEventListener('drop', (e) => {
+                e.preventDefault();
+                column.classList.remove('drag-over');
+                const targetColumnId = column.id;
+
+                if (draggedTask && draggedTask.status !== targetColumnId) {
+                    updateTaskStatus(draggedTask.id, targetColumnId);
+                }
+                draggedTask = null; // Reset dragged task
+            });
+        });
+
+        // Handle window resize for confetti canvas
+        window.addEventListener('resize', () => {
+            if (confettiCanvas.style.display === 'block') {
+                confettiCanvas.width = window.innerWidth;
+                confettiCanvas.height = window.innerHeight;
+            }
+        });
+
+
+        // --- Initial Render ---
+        renderTasks();
+
+        // Example: Add a few initial tasks if storage is empty
+        if (tasks.length === 0) {
+            tasks.push({ id: generateId(), text: 'Making AFO (Adult)', status: 'todo' });
+            tasks.push({ id: generateId(), text: 'Genu Varus and Genu Valgum splints', status: 'todo' });
+            tasks.push({ id: generateId(), text: 'Prosthetic Socket replacement', status: 'inprogress' });
+            tasks.push({ id: generateId(), text: 'Spinal Brace (Adult)', status: 'done' });
+            renderTasks();
+        }
+
+    </script>
+</body>
+</html>
